@@ -1,0 +1,277 @@
+import 'package:flutter/material.dart';
+import 'package:webview_flutter/webview_flutter.dart';
+import 'package:permission_handler/permission_handler.dart';
+
+class CardScannerScreen extends StatefulWidget {
+  final String scanCardUrl;
+  final String transactionAccessToken;
+  final String tokenId;
+  final Function(Map<String, dynamic>) onScanSuccess;
+  final Function(String) onError;
+
+  CardScannerScreen({
+    required this.scanCardUrl,
+    required this.transactionAccessToken,
+    required this.tokenId,
+    required this.onScanSuccess,
+    required this.onError,
+  });
+
+  @override
+  _CardScannerScreenState createState() => _CardScannerScreenState();
+}
+
+class _CardScannerScreenState extends State<CardScannerScreen> {
+  late WebViewController _controller;
+  bool _hasCameraPermission = false;
+
+  // HTML template for scanner
+  String get _htmlContent => '''
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Card Scanner</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { background: #000; color: #fff; font-family: sans-serif; }
+        
+        .scanner-container {
+            position: relative;
+            width: 100vw;
+            height: 100vh;
+            overflow: hidden;
+        }
+        
+        #cameraPreview {
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+        }
+        
+        .scan-overlay {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            pointer-events: none;
+        }
+        
+        .scan-frame {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            width: 85%;
+            height: 55%;
+            transform: translate(-50%, -50%);
+            border: 3px solid rgba(0, 255, 0, 0.8);
+            border-radius: 15px;
+            box-shadow: 0 0 0 9999px rgba(0, 0, 0, 0.7);
+        }
+        
+        .scan-hint {
+            position: absolute;
+            top: 30px;
+            width: 100%;
+            text-align: center;
+            font-size: 16px;
+            color: #0f0;
+            text-shadow: 0 0 10px #0f0;
+        }
+        
+        .capture-btn {
+            position: absolute;
+            bottom: 40px;
+            left: 50%;
+            transform: translateX(-50%);
+            background: #fff;
+            color: #000;
+            border: none;
+            padding: 15px 30px;
+            border-radius: 30px;
+            font-size: 16px;
+            font-weight: bold;
+            cursor: pointer;
+            z-index: 100;
+        }
+        
+        .loader {
+            position: absolute;
+            bottom: 100px;
+            width: 100%;
+            text-align: center;
+            color: #0f0;
+            display: none;
+        }
+    </style>
+</head>
+<body>
+    <div class="scanner-container">
+        <video id="cameraPreview" autoplay playsinline></video>
+        <div class="scan-overlay">
+            <div class="scan-frame"></div>
+            <div class="scan-hint" id="scanHint">Align card in frame</div>
+            <div class="loader" id="scanLoader">Processing...</div>
+        </div>
+        <button class="capture-btn" id="captureBtn">Capture Card</button>
+    </div>
+    
+    <canvas id="captureCanvas" style="display:none;"></canvas>
+    
+    <!-- jQuery for AJAX -->
+    <script src="https://code.jquery.com/jquery-3.7.1.min.js"></script>
+    
+    <script>
+        // API Configuration
+        const MOBICARD_CONFIG = {
+            scanCardUrl: '${widget.scanCardUrl}',
+            transactionAccessToken: '${widget.transactionAccessToken}',
+            tokenId: '${widget.tokenId}'
+        };
+        
+        // Initialize scanner
+        function initScanner() {
+            if (window.MobicardScanner) {
+                window.MobicardScanner.init(MOBICARD_CONFIG);
+                
+                // Set up event listeners
+                document.addEventListener('mobicard:scanSuccess', function(event) {
+                    // Send result to Flutter
+                    if (window.flutter_inappwebview) {
+                        window.flutter_inappwebview.callHandler('scanSuccess', event.detail);
+                    }
+                });
+                
+                document.addEventListener('mobicard:scanError', function(event) {
+                    if (window.flutter_inappwebview) {
+                        window.flutter_inappwebview.callHandler('scanError', event.detail);
+                    }
+                });
+            }
+        }
+        
+        // Initialize when page loads
+        if (document.readyState === 'loading') {
+            document.addEventListener('DOMContentLoaded', initScanner);
+        } else {
+            initScanner();
+        }
+    </script>
+</body>
+</html>
+''';
+
+  @override
+  void initState() {
+    super.initState();
+    _requestCameraPermission();
+  }
+
+  Future<void> _requestCameraPermission() async {
+    final status = await Permission.camera.request();
+    setState(() {
+      _hasCameraPermission = status.isGranted;
+    });
+    
+    if (!_hasCameraPermission) {
+      widget.onError('Camera permission denied');
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (!_hasCameraPermission) {
+      return Scaffold(
+        body: Center(
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              Icon(Icons.camera_alt, size: 64, color: Colors.grey),
+              SizedBox(height: 20),
+              Text('Camera permission required',
+                  style: TextStyle(fontSize: 18)),
+              SizedBox(height: 10),
+              ElevatedButton(
+                onPressed: _requestCameraPermission,
+                child: Text('Grant Permission'),
+              ),
+            ],
+          ),
+        ),
+      );
+    }
+
+    return Scaffold(
+      backgroundColor: Colors.black,
+      body: SafeArea(
+        child: WebView(
+          initialUrl: 'about:blank',
+          javascriptMode: JavascriptMode.unrestricted,
+          onWebViewCreated: (WebViewController webViewController) {
+            _controller = webViewController;
+            _controller.loadUrl(
+                Uri.dataFromString(_htmlContent, mimeType: 'text/html')
+                    .toString());
+          },
+          javascriptChannels: <JavascriptChannel>{
+            _scanSuccessChannel(),
+            _scanErrorChannel(),
+          },
+          onPageFinished: (String url) {
+            // Inject additional JavaScript if needed
+            _controller.runJavascript('''
+                console.log('Scanner loaded successfully');
+            ''');
+          },
+        ),
+      ),
+    );
+  }
+
+  JavascriptChannel _scanSuccessChannel() {
+    return JavascriptChannel(
+      name: 'scanSuccess',
+      onMessageReceived: (JavascriptMessage message) {
+        try {
+          final result = jsonDecode(message.message);
+          widget.onScanSuccess(result);
+        } catch (e) {
+          widget.onError('Failed to parse scan result: $e');
+        }
+      },
+    );
+  }
+
+  JavascriptChannel _scanErrorChannel() {
+    return JavascriptChannel(
+      name: 'scanError',
+      onMessageReceived: (JavascriptMessage message) {
+        widget.onError(message.message);
+      },
+    );
+  }
+}
+
+// Usage Example:
+// Navigator.push(
+//   context,
+//   MaterialPageRoute(
+//     builder: (context) => CardScannerScreen(
+//       scanCardUrl: 'https://api.mobicard.com/v1/scan',
+//       transactionAccessToken: 'your_token',
+//       tokenId: 'your_token_id',
+//       onScanSuccess: (result) {
+//         print('Card scanned: \$result');
+//         Navigator.pop(context);
+//       },
+//       onError: (error) {
+//         print('Error: \$error');
+//         ScaffoldMessenger.of(context).showSnackBar(
+//           SnackBar(content: Text('Scan failed: \$error')),
+//         );
+//       },
+//     ),
+//   ),
+// );
